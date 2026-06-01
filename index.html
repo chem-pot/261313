@@ -1,0 +1,946 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>염화나트륨 전기 전도성 시뮬레이터</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: linear-gradient(135deg, #1a1a2e, #16213e, #0f3460);
+            min-height: 100vh;
+            font-family: 'Malgun Gothic', sans-serif;
+            overflow: hidden;
+            user-select: none;
+        }
+
+        #title {
+            text-align: center;
+            color: #e0e0e0;
+            padding: 15px;
+            font-size: 20px;
+            font-weight: bold;
+            text-shadow: 0 0 10px rgba(100,200,255,0.5);
+            letter-spacing: 2px;
+        }
+
+        #subtitle {
+            text-align: center;
+            color: #aaa;
+            font-size: 13px;
+            margin-bottom: 10px;
+        }
+
+        #canvas {
+            display: block;
+            margin: 0 auto;
+            cursor: pointer;
+            border-radius: 10px;
+            box-shadow: 0 0 30px rgba(0,150,255,0.2);
+        }
+
+        #notification {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%) scale(0);
+            background: linear-gradient(135deg, #00b09b, #96c93d);
+            color: white;
+            padding: 20px 40px;
+            border-radius: 50px;
+            font-size: 18px;
+            font-weight: bold;
+            z-index: 1000;
+            transition: all 0.3s ease;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+            pointer-events: none;
+        }
+
+        #notification.show {
+            transform: translate(-50%, -50%) scale(1);
+        }
+
+        #step-indicator {
+            position: fixed;
+            top: 100px;
+            right: 20px;
+            background: rgba(255,255,255,0.1);
+            backdrop-filter: blur(10px);
+            color: #ddd;
+            padding: 15px 20px;
+            border-radius: 15px;
+            font-size: 13px;
+            border: 1px solid rgba(255,255,255,0.2);
+            line-height: 2;
+        }
+
+        .step-done    { color: #4CAF50; }
+        .step-current { color: #FFD700; font-weight: bold; }
+        .step-pending { color: #888; }
+    </style>
+</head>
+<body>
+    <div id="title">🔬 염화나트륨(NaCl) 전기 전도성 시뮬레이터</div>
+    <div id="subtitle">이온결합 물질의 수용액 전기 전도 원리</div>
+    <canvas id="canvas"></canvas>
+    <div id="notification"></div>
+
+    <div id="step-indicator">
+        <div id="step1" class="step-current">① NaCl을 비커에 넣기</div>
+        <div id="step2" class="step-pending">② 섞기 버튼 누르기</div>
+        <div id="step3" class="step-pending">③ 전극을 수용액에 넣기</div>
+        <div id="step4" class="step-pending">④ 전원 연결하기</div>
+        <div id="step5" class="step-pending">⑤ 이온의 이동 관찰</div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx    = canvas.getContext('2d');
+
+        canvas.width  = window.innerWidth > 900 ? 900 : window.innerWidth - 20;
+        canvas.height = window.innerHeight - 130;
+
+        // ===== 이온 크기 설정 =====
+        // Na+ : 작게 (반지름 7), Cl- : 크게 (반지름 13)
+        const ION_RADIUS = { 'Na+': 7,  'Cl-': 13 };
+        const ION_COLORS = { 'Na+': '#FFD700', 'Cl-': '#00E676' };
+
+        // ===== 상태 관리 =====
+        const state = {
+            naclInBeaker      : false,
+            isSolution        : false,
+            showMixBtn        : false,
+            mixing            : false,
+            mixProgress       : 0,
+            electrodeInSolution: false,
+            showPowerBtn      : false,
+            powered           : false,
+            showIons          : false
+        };
+
+        // ===== 비커 (고정) =====
+        const beaker = {
+            x: canvas.width / 2 - 80,
+            y: canvas.height / 2 - 90,
+            width: 160,
+            height: 180,
+            waterLevel: 0.65
+        };
+
+        // ===== NaCl 고체 =====
+        const nacl = {
+            x: 80,
+            y: canvas.height / 2 - 40,
+            width: 80,
+            height: 60,
+            dragging: false,
+            visible : true,
+            offsetX : 0,
+            offsetY : 0
+        };
+
+        // ===== 전극 =====
+        const electrodeNeg = {
+            x: 130, y: canvas.height / 2 - 120,
+            width: 18, height: 80,
+            label: '−',
+            dragging: false,
+            offsetX: 0, offsetY: 0
+        };
+
+        const electrodePos = {
+            x: canvas.width - 155, y: canvas.height / 2 - 120,
+            width: 18, height: 80,
+            label: '+',
+            dragging: false,
+            offsetX: 0, offsetY: 0
+        };
+
+        // ===== 버튼 =====
+        const mixBtn = {
+            x: beaker.x + beaker.width / 2 - 60,
+            y: beaker.y + beaker.height + 20,
+            width: 120, height: 40
+        };
+
+        const powerBtn = {
+            x: canvas.width / 2 - 75,
+            y: beaker.y + beaker.height + 20,
+            width: 150, height: 40
+        };
+
+        // ===== 이온 =====
+        let ions = [];
+        const ION_COUNT = 16;
+
+        function initIons() {
+            ions = [];
+            const wx = beaker.x + 18;
+            const wy = beaker.y + beaker.height * (1 - beaker.waterLevel) + 12;
+            const ww = beaker.width  - 36;
+            const wh = beaker.height * beaker.waterLevel - 20;
+
+            for (let i = 0; i < ION_COUNT; i++) {
+                const isNa = i % 2 === 0;
+                const type = isNa ? 'Na+' : 'Cl-';
+                ions.push({
+                    x     : wx + Math.random() * ww,
+                    y     : wy + Math.random() * wh,
+                    radius: ION_RADIUS[type],
+                    type,
+                    color : ION_COLORS[type],
+                    vx    : (Math.random() - 0.5) * 1.2,
+                    vy    : (Math.random() - 0.5) * 1.2
+                });
+            }
+        }
+
+        // ===== 파티클 =====
+        let particles = [];
+
+        function createMixParticles() {
+            const cx = beaker.x + beaker.width / 2;
+            const cy = beaker.y + beaker.height * 0.65;
+            for (let i = 0; i < 30; i++) {
+                particles.push({
+                    x: cx, y: cy,
+                    vx: (Math.random() - 0.5) * 4,
+                    vy: (Math.random() - 0.5) * 4,
+                    life  : 1.0,
+                    color : Math.random() > 0.5 ? ION_COLORS['Na+'] : ION_COLORS['Cl-'],
+                    radius: Math.random() * 5 + 3
+                });
+            }
+        }
+
+        // ===== 스파크 =====
+        let sparks = [];
+        let sparkTimer = 0;
+
+        function createSparks() {
+            if (!state.powered) return;
+            sparkTimer++;
+            if (sparkTimer % 8 !== 0) return;
+            for (let i = 0; i < 3; i++) {
+                const isNeg = Math.random() > 0.5;
+                const el    = isNeg ? electrodeNeg : electrodePos;
+                sparks.push({
+                    x: el.x + el.width / 2,
+                    y: el.y + el.height,
+                    vx: (Math.random() - 0.5) * 3,
+                    vy: -Math.random() * 2,
+                    life : 1.0,
+                    color: isNeg ? '#4FC3F7' : '#FFD54F'
+                });
+            }
+        }
+
+        // ===== 그리기 =====
+
+        function drawBackground() {
+            ctx.fillStyle = 'rgba(26,26,46,0.97)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            ctx.strokeStyle = 'rgba(255,255,255,0.03)';
+            ctx.lineWidth   = 1;
+            for (let x = 0; x < canvas.width;  x += 40) {
+                ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke();
+            }
+            for (let y = 0; y < canvas.height; y += 40) {
+                ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
+            }
+        }
+
+        function drawBeaker() {
+            const { x: bx, y: by, width: bw, height: bh, waterLevel } = beaker;
+            const waterY = by + bh * (1 - waterLevel);
+
+            // 물 / 수용액
+            const grad = ctx.createLinearGradient(bx, waterY, bx, by + bh);
+            if (state.isSolution) {
+                grad.addColorStop(0, 'rgba(120,210,255,0.38)');
+                grad.addColorStop(1, 'rgba(60,160,230,0.58)');
+            } else {
+                grad.addColorStop(0, 'rgba(100,180,255,0.25)');
+                grad.addColorStop(1, 'rgba(50,120,200,0.40)');
+            }
+            ctx.fillStyle = grad;
+            ctx.beginPath();
+            ctx.moveTo(bx + 10, waterY);
+            ctx.lineTo(bx + bw - 10, waterY);
+            ctx.lineTo(bx + bw, by + bh);
+            ctx.lineTo(bx, by + bh);
+            ctx.closePath();
+            ctx.fill();
+
+            // 수면 반짝임
+            ctx.strokeStyle = 'rgba(200,230,255,0.55)';
+            ctx.lineWidth   = 2;
+            ctx.beginPath();
+            ctx.moveTo(bx + 10, waterY);
+            ctx.lineTo(bx + bw - 10, waterY);
+            ctx.stroke();
+
+            // 비커 테두리
+            ctx.strokeStyle = 'rgba(180,220,255,0.9)';
+            ctx.lineWidth   = 3;
+            ctx.beginPath();
+            ctx.moveTo(bx + 10, by);
+            ctx.lineTo(bx, by + bh);
+            ctx.lineTo(bx + bw, by + bh);
+            ctx.lineTo(bx + bw - 10, by);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(bx + 10, by);
+            ctx.lineTo(bx + bw - 10, by);
+            ctx.stroke();
+
+            // 눈금
+            ctx.strokeStyle = 'rgba(180,220,255,0.4)';
+            ctx.lineWidth   = 1;
+            ctx.font        = '10px Malgun Gothic';
+            ctx.fillStyle   = 'rgba(180,220,255,0.5)';
+            for (let i = 1; i <= 3; i++) {
+                const lineY = by + bh - (bh / 4) * i;
+                ctx.beginPath();
+                ctx.moveTo(bx + bw - 25, lineY);
+                ctx.lineTo(bx + bw - 10, lineY);
+                ctx.stroke();
+                ctx.fillText(`${i * 25}`, bx + bw - 42, lineY + 4);
+            }
+
+            // 라벨
+            ctx.textAlign = 'center';
+            if (state.isSolution) {
+                ctx.fillStyle = '#7FD8F0';
+                ctx.font      = 'bold 13px Malgun Gothic';
+                ctx.fillText('NaCl 수용액', bx + bw / 2, by - 16);
+                ctx.font      = '11px Malgun Gothic';
+                ctx.fillStyle = '#aaa';
+                ctx.fillText('Na⁺ + Cl⁻ 이온 용해됨', bx + bw / 2, by - 3);
+            } else {
+                ctx.fillStyle = '#aaddff';
+                ctx.font      = 'bold 13px Malgun Gothic';
+                ctx.fillText('H₂O (증류수)', bx + bw / 2, by - 10);
+            }
+            ctx.textAlign = 'left';
+        }
+
+        function drawNaCl() {
+            if (!nacl.visible) return;
+            const { x: nx, y: ny, width: nw, height: nh } = nacl;
+
+            // 그림자
+            ctx.fillStyle = 'rgba(0,0,0,0.3)';
+            ctx.fillRect(nx + 5, ny + 5, nw, nh);
+
+            // 결정 몸체
+            const grad = ctx.createLinearGradient(nx, ny, nx + nw, ny + nh);
+            grad.addColorStop(0,   '#f0f0ff');
+            grad.addColorStop(0.5, '#c8d8ff');
+            grad.addColorStop(1,   '#9fb0e0');
+            ctx.fillStyle = grad;
+            ctx.beginPath();
+            ctx.roundRect(nx, ny, nw, nh, 6);
+            ctx.fill();
+
+            // 이온 격자 (Na+=작은 노란 점, Cl-=큰 초록 점)
+            const gridSize = 14;
+            for (let gx = nx + 9; gx < nx + nw - 6; gx += gridSize) {
+                for (let gy = ny + 9; gy < ny + nh - 6; gy += gridSize) {
+                    const isNa = (Math.round((gx - nx) / gridSize) + Math.round((gy - ny) / gridSize)) % 2 === 0;
+                    ctx.beginPath();
+                    // Na+ 작게(3px), Cl- 크게(5px)
+                    ctx.arc(gx, gy, isNa ? 3 : 5, 0, Math.PI * 2);
+                    ctx.fillStyle = isNa ? ION_COLORS['Na+'] : ION_COLORS['Cl-'];
+                    ctx.fill();
+                }
+            }
+
+            // 테두리
+            ctx.strokeStyle = 'rgba(100,150,255,0.8)';
+            ctx.lineWidth   = 2;
+            ctx.beginPath();
+            ctx.roundRect(nx, ny, nw, nh, 6);
+            ctx.stroke();
+
+            // 라벨
+            ctx.textAlign = 'center';
+            ctx.fillStyle = '#333';
+            ctx.font      = 'bold 16px Malgun Gothic';
+            ctx.fillText('NaCl', nx + nw / 2, ny + nh + 18);
+            ctx.font      = '11px Malgun Gothic';
+            ctx.fillStyle = '#aaa';
+            ctx.fillText('고체 염화나트륨', nx + nw / 2, ny + nh + 32);
+
+            if (!state.naclInBeaker) {
+                ctx.fillStyle = 'rgba(255,220,100,0.9)';
+                ctx.font      = '11px Malgun Gothic';
+                ctx.fillText('✋ 드래그하세요', nx + nw / 2, ny - 8);
+            }
+            ctx.textAlign = 'left';
+        }
+
+        function drawElectrodes() {
+            if (!state.isSolution) return;
+
+            [electrodeNeg, electrodePos].forEach(el => {
+                const isNeg = el.label === '−';
+
+                // 전선
+                ctx.strokeStyle = isNeg ? '#4FC3F7' : '#FFD54F';
+                ctx.lineWidth   = 3;
+                ctx.setLineDash([5, 4]);
+                ctx.beginPath();
+                ctx.moveTo(el.x + el.width / 2, el.y);
+                ctx.lineTo(el.x + el.width / 2, el.y - 28);
+                ctx.stroke();
+                ctx.setLineDash([]);
+
+                // 전극 몸체
+                const grad = ctx.createLinearGradient(el.x, el.y, el.x + el.width, el.y);
+                grad.addColorStop(0,   isNeg ? '#37474F' : '#757575');
+                grad.addColorStop(0.5, isNeg ? '#546E7A' : '#9E9E9E');
+                grad.addColorStop(1,   isNeg ? '#37474F' : '#757575');
+                ctx.fillStyle = grad;
+                ctx.beginPath();
+                ctx.roundRect(el.x, el.y, el.width, el.height, 4);
+                ctx.fill();
+
+                // 발광 (전원 ON)
+                if (state.powered) {
+                    ctx.shadowColor = isNeg ? '#4FC3F7' : '#FFD54F';
+                    ctx.shadowBlur  = 18;
+                    ctx.strokeStyle = isNeg ? '#4FC3F7' : '#FFD54F';
+                    ctx.lineWidth   = 3;
+                    ctx.beginPath();
+                    ctx.roundRect(el.x - 2, el.y - 2, el.width + 4, el.height + 4, 6);
+                    ctx.stroke();
+                    ctx.shadowBlur = 0;
+                }
+
+                ctx.strokeStyle = isNeg ? '#4FC3F7' : '#FFD54F';
+                ctx.lineWidth   = 2;
+                ctx.beginPath();
+                ctx.roundRect(el.x, el.y, el.width, el.height, 4);
+                ctx.stroke();
+
+                // 극 기호
+                ctx.fillStyle   = isNeg ? '#4FC3F7' : '#FFD54F';
+                ctx.font        = 'bold 22px Arial';
+                ctx.textAlign   = 'center';
+                ctx.fillText(el.label, el.x + el.width / 2, el.y + el.height / 2 + 8);
+                ctx.textAlign   = 'left';
+
+                // 라벨
+                ctx.fillStyle = '#ccc';
+                ctx.font      = 'bold 12px Malgun Gothic';
+                ctx.textAlign = 'center';
+                ctx.fillText(isNeg ? '(−)극' : '(+)극', el.x + el.width / 2, el.y - 36);
+
+                if (!state.powered) {
+                    ctx.fillStyle = 'rgba(255,220,100,0.85)';
+                    ctx.font      = '10px Malgun Gothic';
+                    ctx.fillText('✋ 드래그', el.x + el.width / 2, el.y + el.height + 15);
+                }
+                ctx.textAlign = 'left';
+            });
+        }
+
+        function drawMixBtn() {
+            if (!state.showMixBtn || state.isSolution) return;
+            const btn = mixBtn;
+
+            ctx.shadowColor = '#00e676';
+            ctx.shadowBlur  = 15;
+            const grad = ctx.createLinearGradient(btn.x, btn.y, btn.x, btn.y + btn.height);
+            grad.addColorStop(0, '#00e676');
+            grad.addColorStop(1, '#00b248');
+            ctx.fillStyle = grad;
+            ctx.beginPath();
+            ctx.roundRect(btn.x, btn.y, btn.width, btn.height, 10);
+            ctx.fill();
+            ctx.shadowBlur = 0;
+
+            ctx.fillStyle   = 'white';
+            ctx.font        = 'bold 15px Malgun Gothic';
+            ctx.textAlign   = 'center';
+            ctx.fillText('🌀 섞기', btn.x + btn.width / 2, btn.y + btn.height / 2 + 5);
+            ctx.textAlign   = 'left';
+        }
+
+        function drawPowerBtn() {
+            if (!state.electrodeInSolution) return;
+            const btn   = powerBtn;
+            const isOn  = state.powered;
+
+            ctx.shadowColor = isOn ? '#4CAF50' : '#FF6B35';
+            ctx.shadowBlur  = 18;
+
+            const grad = ctx.createLinearGradient(btn.x, btn.y, btn.x, btn.y + btn.height);
+            if (isOn) {
+                grad.addColorStop(0, '#43A047');
+                grad.addColorStop(1, '#1B5E20');
+            } else {
+                grad.addColorStop(0, '#FF6B35');
+                grad.addColorStop(1, '#C0392B');
+            }
+            ctx.fillStyle = grad;
+            ctx.beginPath();
+            ctx.roundRect(btn.x, btn.y, btn.width, btn.height, 10);
+            ctx.fill();
+            ctx.shadowBlur = 0;
+
+            ctx.strokeStyle = isOn ? '#A5D6A7' : '#FFAB91';
+            ctx.lineWidth   = 2;
+            ctx.beginPath();
+            ctx.roundRect(btn.x, btn.y, btn.width, btn.height, 10);
+            ctx.stroke();
+
+            ctx.fillStyle   = 'white';
+            ctx.font        = 'bold 15px Malgun Gothic';
+            ctx.textAlign   = 'center';
+            ctx.fillText(isOn ? '🔴 전원 끄기' : '⚡ 전원 연결',
+                         btn.x + btn.width / 2, btn.y + btn.height / 2 + 5);
+            ctx.textAlign   = 'left';
+        }
+
+        function drawCurrentFlow() {
+            if (!state.powered) return;
+
+            const t       = Date.now() / 300;
+            const negTopX = electrodeNeg.x + electrodeNeg.width / 2;
+            const posTopX = electrodePos.x + electrodePos.width / 2;
+            const wireY   = Math.min(electrodeNeg.y, electrodePos.y) - 32;
+
+            ctx.strokeStyle   = 'rgba(255,200,50,0.45)';
+            ctx.lineWidth     = 2.5;
+            ctx.setLineDash([8, 6]);
+            ctx.lineDashOffset = -t * 5;
+            ctx.beginPath();
+            ctx.moveTo(negTopX, electrodeNeg.y);
+            ctx.lineTo(negTopX, wireY);
+            ctx.lineTo(posTopX, wireY);
+            ctx.lineTo(posTopX, electrodePos.y);
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            const midX = (negTopX + posTopX) / 2;
+            ctx.shadowColor = '#FFD700';
+            ctx.shadowBlur  = 10;
+            ctx.fillStyle   = 'rgba(255,210,50,0.95)';
+            ctx.font        = 'bold 14px Malgun Gothic';
+            ctx.textAlign   = 'center';
+            ctx.fillText('⚡ 전원 ON', midX, wireY - 10);
+            ctx.shadowBlur  = 0;
+            ctx.textAlign   = 'left';
+        }
+
+        function drawIons() {
+            if (!state.showIons) return;
+
+            ions.forEach(ion => {
+                ctx.shadowColor = ion.color;
+                ctx.shadowBlur  = ion.type === 'Cl-' ? 16 : 10;
+
+                const grad = ctx.createRadialGradient(
+                    ion.x - ion.radius * 0.3, ion.y - ion.radius * 0.3, 1,
+                    ion.x, ion.y, ion.radius
+                );
+                grad.addColorStop(0,   'rgba(255,255,255,0.9)');
+                grad.addColorStop(0.4, ion.color);
+                grad.addColorStop(1,   ion.color + '88');
+                ctx.fillStyle = grad;
+                ctx.beginPath();
+                ctx.arc(ion.x, ion.y, ion.radius, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.shadowBlur = 0;
+
+                // 이온 기호 — 크기에 맞게 폰트 조정
+                ctx.fillStyle   = '#111';
+                ctx.font        = ion.type === 'Cl-' ? 'bold 9px Arial' : 'bold 7px Arial';
+                ctx.textAlign   = 'center';
+                ctx.fillText(ion.type, ion.x, ion.y + (ion.type === 'Cl-' ? 3.5 : 2.5));
+                ctx.textAlign   = 'left';
+            });
+        }
+
+        function drawParticles() {
+            particles = particles.filter(p => p.life > 0);
+            particles.forEach(p => {
+                ctx.globalAlpha = p.life;
+                ctx.fillStyle   = p.color;
+                ctx.shadowColor = p.color;
+                ctx.shadowBlur  = 8;
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, p.radius * p.life, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.shadowBlur  = 0;
+                p.x  += p.vx;
+                p.y  += p.vy;
+                p.vy += 0.1;
+                p.life -= 0.025;
+            });
+            ctx.globalAlpha = 1;
+        }
+
+        function drawSparks() {
+            sparks = sparks.filter(s => s.life > 0);
+            sparks.forEach(s => {
+                ctx.globalAlpha = s.life;
+                ctx.fillStyle   = s.color;
+                ctx.shadowColor = s.color;
+                ctx.shadowBlur  = 10;
+                ctx.beginPath();
+                ctx.arc(s.x, s.y, 3 * s.life, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.shadowBlur  = 0;
+                s.x  += s.vx;
+                s.y  += s.vy;
+                s.life -= 0.05;
+            });
+            ctx.globalAlpha = 1;
+        }
+
+        function drawLegend() {
+            if (!state.showIons) return;
+
+            const lx = 22;
+            const ly = canvas.height - 145;
+
+            ctx.fillStyle = 'rgba(0,0,0,0.55)';
+            ctx.beginPath();
+            ctx.roundRect(lx - 10, ly - 12, 200, 125, 10);
+            ctx.fill();
+
+            ctx.fillStyle = '#fff';
+            ctx.font      = 'bold 13px Malgun Gothic';
+            ctx.fillText('이온 범례', lx, ly + 8);
+
+            // Na+ — 작은 노란 원
+            ctx.shadowColor = ION_COLORS['Na+'];
+            ctx.shadowBlur  = 8;
+            ctx.fillStyle   = ION_COLORS['Na+'];
+            ctx.beginPath();
+            ctx.arc(lx + 9, ly + 32, ION_RADIUS['Na+'], 0, Math.PI * 2);
+            ctx.fill();
+            ctx.shadowBlur  = 0;
+            ctx.fillStyle   = 'white';
+            ctx.font        = '12px Malgun Gothic';
+            ctx.fillText('Na⁺ (나트륨 이온, 작음)', lx + 22, ly + 36);
+
+            // Cl- — 큰 초록 원
+            ctx.shadowColor = ION_COLORS['Cl-'];
+            ctx.shadowBlur  = 8;
+            ctx.fillStyle   = ION_COLORS['Cl-'];
+            ctx.beginPath();
+            ctx.arc(lx + 9, ly + 63, ION_RADIUS['Cl-'], 0, Math.PI * 2);
+            ctx.fill();
+            ctx.shadowBlur  = 0;
+            ctx.fillStyle   = 'white';
+            ctx.font        = '12px Malgun Gothic';
+            ctx.fillText('Cl⁻ (염화 이온, 큼)', lx + 26, ly + 67);
+
+            if (state.powered) {
+                ctx.fillStyle = '#FFD700';
+                ctx.font      = '11px Malgun Gothic';
+                ctx.fillText('→ Na⁺: (−)극 방향 이동', lx, ly + 90);
+                ctx.fillStyle = '#00E676';
+                ctx.fillText('→ Cl⁻: (+)극 방향 이동', lx, ly + 106);
+            }
+        }
+
+        // ===== 물리 업데이트 =====
+
+        function updateIons() {
+            if (!state.showIons) return;
+
+            const wx = beaker.x + 18;
+            const wy = beaker.y + beaker.height * (1 - beaker.waterLevel) + 10;
+            const ww = beaker.width  - 36;
+            const wh = beaker.height * beaker.waterLevel - 18;
+
+            ions.forEach(ion => {
+                if (state.powered) {
+                    const target = ion.type === 'Na+'
+                        ? { x: electrodeNeg.x + electrodeNeg.width / 2,
+                            y: electrodeNeg.y + electrodeNeg.height * 0.8 }
+                        : { x: electrodePos.x + electrodePos.width / 2,
+                            y: electrodePos.y + electrodePos.height * 0.8 };
+
+                    const dx   = target.x - ion.x;
+                    const dy   = target.y - ion.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+
+                    if (dist > 14) {
+                        ion.vx += (dx / dist) * 0.18;
+                        ion.vy += (dy / dist) * 0.18;
+                        const speed = Math.sqrt(ion.vx * ion.vx + ion.vy * ion.vy);
+                        if (speed > 2.8) {
+                            ion.vx = (ion.vx / speed) * 2.8;
+                            ion.vy = (ion.vy / speed) * 2.8;
+                        }
+                    } else {
+                        ion.vx = (Math.random() - 0.5) * 0.6;
+                        ion.vy = (Math.random() - 0.5) * 0.6;
+                    }
+                } else {
+                    // 브라운 운동
+                    ion.vx += (Math.random() - 0.5) * 0.3;
+                    ion.vy += (Math.random() - 0.5) * 0.3;
+                    const speed = Math.sqrt(ion.vx * ion.vx + ion.vy * ion.vy);
+                    if (speed > 1.5) {
+                        ion.vx = (ion.vx / speed) * 1.5;
+                        ion.vy = (ion.vy / speed) * 1.5;
+                    }
+
+                    // 비커 경계
+                    if (ion.x < wx + ion.radius)       { ion.x = wx + ion.radius;       ion.vx *= -1; }
+                    if (ion.x > wx + ww - ion.radius)  { ion.x = wx + ww - ion.radius;  ion.vx *= -1; }
+                    if (ion.y < wy + ion.radius)       { ion.y = wy + ion.radius;       ion.vy *= -1; }
+                    if (ion.y > wy + wh - ion.radius)  { ion.y = wy + wh - ion.radius;  ion.vy *= -1; }
+                }
+
+                ion.x += ion.vx;
+                ion.y += ion.vy;
+            });
+        }
+
+        function updateMixing() {
+            if (!state.mixing) return;
+            state.mixProgress += 0.015;
+            if (state.mixProgress % 0.1 < 0.015) createMixParticles();
+
+            if (state.mixProgress >= 1.0) {
+                state.mixing    = false;
+                state.isSolution= true;
+                state.showMixBtn= false;
+                state.showIons  = true;
+                nacl.visible    = false;
+                initIons();
+                showNotification('✅ 염화나트륨 수용액 생성 완료!');
+                updateStepIndicator(3);
+            }
+        }
+
+        // ===== 충돌 검사 =====
+
+        function isNaClInBeaker() {
+            const ncx = nacl.x + nacl.width  / 2;
+            const ncy = nacl.y + nacl.height / 2;
+            const waterTop = beaker.y + beaker.height * (1 - beaker.waterLevel);
+            return (
+                ncx > beaker.x &&
+                ncx < beaker.x + beaker.width &&
+                ncy > waterTop &&
+                ncy < beaker.y + beaker.height
+            );
+        }
+
+        function isElectrodeInSolution(el) {
+            const ecx     = el.x + el.width / 2;
+            const eBottom = el.y + el.height;
+            const waterTop = beaker.y + beaker.height * (1 - beaker.waterLevel);
+            return (
+                ecx    > beaker.x + 8 &&
+                ecx    < beaker.x + beaker.width - 8 &&
+                eBottom > waterTop + 12
+            );
+        }
+
+        // ===== 알림 =====
+        function showNotification(msg) {
+            const el = document.getElementById('notification');
+            el.textContent = msg;
+            el.classList.add('show');
+            setTimeout(() => el.classList.remove('show'), 2500);
+        }
+
+        // ===== 단계 표시 =====
+        function updateStepIndicator(currentStep) {
+            for (let i = 1; i <= 5; i++) {
+                const el = document.getElementById(`step${i}`);
+                if      (i < currentStep) el.className = 'step-done';
+                else if (i === currentStep) el.className = 'step-current';
+                else                        el.className = 'step-pending';
+            }
+        }
+
+        // ===== 이벤트 =====
+        let dragTarget = null;
+
+        function getPoint(e) {
+            const rect = canvas.getBoundingClientRect();
+            if (e.touches) {
+                return { x: e.touches[0].clientX - rect.left,
+                         y: e.touches[0].clientY - rect.top };
+            }
+            return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+        }
+
+        function handleStart(e) {
+            e.preventDefault();
+            const p = getPoint(e);
+
+            // NaCl 드래그
+            if (nacl.visible &&
+                p.x > nacl.x && p.x < nacl.x + nacl.width &&
+                p.y > nacl.y && p.y < nacl.y + nacl.height) {
+                nacl.dragging = true;
+                nacl.offsetX  = p.x - nacl.x;
+                nacl.offsetY  = p.y - nacl.y;
+                dragTarget    = 'nacl';
+                return;
+            }
+
+            // 전극 드래그 (전원 OFF)
+            if (state.isSolution && !state.powered) {
+                [electrodeNeg, electrodePos].forEach((el, idx) => {
+                    if (p.x > el.x && p.x < el.x + el.width &&
+                        p.y > el.y && p.y < el.y + el.height) {
+                        el.dragging  = true;
+                        el.offsetX   = p.x - el.x;
+                        el.offsetY   = p.y - el.y;
+                        dragTarget   = idx === 0 ? 'neg' : 'pos';
+                    }
+                });
+            }
+
+            // 섞기 버튼
+            if (state.showMixBtn && !state.isSolution &&
+                p.x > mixBtn.x && p.x < mixBtn.x + mixBtn.width &&
+                p.y > mixBtn.y && p.y < mixBtn.y + mixBtn.height) {
+                state.mixing     = true;
+                state.showMixBtn = false;
+                state.mixProgress= 0;
+                updateStepIndicator(2);
+                createMixParticles();
+                return;
+            }
+
+            // 전원 버튼 (토글)
+            const btn = powerBtn;
+            if (state.electrodeInSolution &&
+                p.x > btn.x && p.x < btn.x + btn.width &&
+                p.y > btn.y && p.y < btn.y + btn.height) {
+                if (!state.powered) {
+                    state.powered = true;
+                    showNotification('⚡ 전원 ON! 이온이 이동합니다!');
+                    updateStepIndicator(5);
+                } else {
+                    state.powered = false;
+                    showNotification('🔴 전원 OFF. 이온이 자유 이동합니다.');
+                    updateStepIndicator(4);
+                    resetIonsInBeaker();
+                }
+                return;
+            }
+        }
+
+        function resetIonsInBeaker() {
+            const wx = beaker.x + 18;
+            const wy = beaker.y + beaker.height * (1 - beaker.waterLevel) + 12;
+            const ww = beaker.width  - 36;
+            const wh = beaker.height * beaker.waterLevel - 20;
+            ions.forEach(ion => {
+                ion.x  = wx + Math.random() * ww;
+                ion.y  = wy + Math.random() * wh;
+                ion.vx = (Math.random() - 0.5) * 1.2;
+                ion.vy = (Math.random() - 0.5) * 1.2;
+            });
+        }
+
+        function handleMove(e) {
+            e.preventDefault();
+            const p = getPoint(e);
+
+            if (dragTarget === 'nacl' && nacl.dragging) {
+                nacl.x = p.x - nacl.offsetX;
+                nacl.y = p.y - nacl.offsetY;
+                if (isNaClInBeaker() && !state.naclInBeaker) {
+                    state.naclInBeaker = true;
+                    state.showMixBtn   = true;
+                    updateStepIndicator(2);
+                } else if (!isNaClInBeaker()) {
+                    state.naclInBeaker = false;
+                    state.showMixBtn   = false;
+                }
+            }
+
+            if (dragTarget === 'neg' && electrodeNeg.dragging) {
+                electrodeNeg.x = p.x - electrodeNeg.offsetX;
+                electrodeNeg.y = p.y - electrodeNeg.offsetY;
+                checkElectrodeStatus();
+            }
+
+            if (dragTarget === 'pos' && electrodePos.dragging) {
+                electrodePos.x = p.x - electrodePos.offsetX;
+                electrodePos.y = p.y - electrodePos.offsetY;
+                checkElectrodeStatus();
+            }
+        }
+
+        function checkElectrodeStatus() {
+            const negIn = isElectrodeInSolution(electrodeNeg);
+            const posIn = isElectrodeInSolution(electrodePos);
+
+            if (negIn && posIn) {
+                state.showPowerBtn        = true;
+                state.electrodeInSolution = true;
+                updateStepIndicator(4);
+            } else {
+                state.showPowerBtn        = false;
+                state.electrodeInSolution = false;
+                if (state.powered) {
+                    state.powered = false;
+                    showNotification('🔌 전극이 분리되어 전원이 꺼졌습니다.');
+                    resetIonsInBeaker();
+                }
+            }
+        }
+
+        function handleEnd() {
+            nacl.dragging         = false;
+            electrodeNeg.dragging = false;
+            electrodePos.dragging = false;
+            dragTarget            = null;
+        }
+
+        canvas.addEventListener('mousedown',  handleStart);
+        canvas.addEventListener('mousemove',  handleMove);
+        canvas.addEventListener('mouseup',    handleEnd);
+        canvas.addEventListener('touchstart', handleStart, { passive: false });
+        canvas.addEventListener('touchmove',  handleMove,  { passive: false });
+        canvas.addEventListener('touchend',   handleEnd);
+
+        // ===== 메인 루프 =====
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            drawBackground();
+            drawBeaker();
+            drawNaCl();
+            drawCurrentFlow();
+            drawElectrodes();
+            drawIons();
+            drawParticles();
+            drawSparks();
+            drawMixBtn();
+            drawPowerBtn();
+            drawLegend();
+
+            updateIons();
+            updateMixing();
+            createSparks();
+
+            requestAnimationFrame(draw);
+        }
+
+        draw();
+    </script>
+</body>
+</html>
